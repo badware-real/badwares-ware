@@ -20,6 +20,11 @@ EXIT_COLOR = (255, 215, 0)
 TEXT_COLOR = (220, 220, 220)
 BUTTON_COLOR = (70, 70, 120)
 BUTTON_HOVER = (100, 100, 180)
+BOX_COLOR = (160, 100, 40)
+BOX_BORDER = (120, 70, 20)
+BTN_ON = (50, 220, 50)
+BTN_OFF = (200, 50, 50)
+TRAPDOOR_COLOR = (180, 120, 60)
 
 GRAVITY = 0.5
 JUMP_SPEED = -13
@@ -43,6 +48,93 @@ class Platform:
         pygame.draw.rect(surf, self.color, r)
         border = (160, 160, 160) if self.portalable else (80, 80, 85)
         pygame.draw.rect(surf, border, r, 2)
+
+
+class Trapdoor:
+    """Solid gate when closed; passable when open."""
+    portalable = False
+
+    def __init__(self, linkname, x, y, w, h):
+        self.linkname = linkname
+        self.rect = pygame.Rect(x, y, w, h)
+        self.open = False
+
+    def draw(self, surf, cx, cy):
+        r = self.rect.move(-cx, -cy)
+        if self.open:
+            # faint ghost outline so the player can see where it was
+            pygame.draw.rect(surf, (60, 40, 20), r, 1)
+        else:
+            pygame.draw.rect(surf, TRAPDOOR_COLOR, r)
+            pygame.draw.rect(surf, (220, 160, 80), r, 2)
+            pygame.draw.line(surf, (220, 160, 80), r.topleft, r.bottomright, 1)
+            pygame.draw.line(surf, (220, 160, 80), r.topright, r.bottomleft, 1)
+
+
+class PressureButton:
+    def __init__(self, linkname, x, y, w=44, h=10):
+        self.linkname = linkname
+        self.rect = pygame.Rect(x, y, w, h)
+        self.active = False
+
+    def update(self, player_rect, boxes):
+        # trigger zone extends a few pixels above the button surface
+        trigger = pygame.Rect(self.rect.x, self.rect.y - 8, self.rect.w, self.rect.h + 8)
+        self.active = trigger.colliderect(player_rect)
+        if not self.active:
+            for box in boxes:
+                if not box.carried and trigger.colliderect(box.rect):
+                    self.active = True
+                    break
+
+    def draw(self, surf, cx, cy):
+        r = self.rect.move(-cx, -cy)
+        pygame.draw.rect(surf, BTN_ON if self.active else BTN_OFF, r, border_radius=2)
+        pygame.draw.rect(surf, (200, 200, 200), r, 1, border_radius=2)
+        lbl = font_small.render("BTN", True, BLACK)
+        surf.blit(lbl, (r.centerx - lbl.get_width() // 2, r.y - 22))
+
+
+class Box:
+    def __init__(self, x, y):
+        self.rect = pygame.Rect(x, y, 32, 32)
+        self.vx = 0.0
+        self.vy = 0.0
+        self.on_ground = False
+        self.carried = False
+
+    def update(self, platforms):
+        if self.carried:
+            return
+        self.vy = min(self.vy + GRAVITY, 15)
+
+        self.rect.x += self.vx
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                if self.vx > 0:
+                    self.rect.right = p.rect.left
+                else:
+                    self.rect.left = p.rect.right
+                self.vx = 0
+
+        self.on_ground = False
+        self.rect.y += self.vy
+        for p in platforms:
+            if self.rect.colliderect(p.rect):
+                if self.vy >= 0:
+                    self.rect.bottom = p.rect.top
+                    self.vy = 0
+                    self.on_ground = True
+                else:
+                    self.rect.top = p.rect.bottom
+                    self.vy = 0
+
+    def draw(self, surf, cx, cy):
+        r = self.rect.move(-cx, -cy)
+        pygame.draw.rect(surf, BOX_COLOR, r, border_radius=3)
+        pygame.draw.rect(surf, BOX_BORDER, r, 2, border_radius=3)
+        pygame.draw.line(surf, BOX_BORDER, r.topleft, r.bottomright, 1)
+        pygame.draw.line(surf, BOX_BORDER, r.topright, r.bottomleft, 1)
 
 
 class Portal:
@@ -78,6 +170,7 @@ class Player:
         self.vy = 0
         self.on_ground = False
         self.cooldown = 0
+        self.held_box = None
 
     def reset(self, x, y):
         self.rect.topleft = (x, y)
@@ -85,6 +178,9 @@ class Player:
         self.vy = 0
         self.on_ground = False
         self.cooldown = 0
+        if self.held_box:
+            self.held_box.carried = False
+            self.held_box = None
 
     def update(self, platforms):
         keys = pygame.key.get_pressed()
@@ -120,6 +216,11 @@ class Player:
 
         if self.cooldown > 0:
             self.cooldown -= 1
+
+        # Keep carried box floating above the player's head
+        if self.held_box:
+            self.held_box.rect.centerx = self.rect.centerx
+            self.held_box.rect.bottom = self.rect.top - 2
 
     def draw(self, surf, cx, cy):
         r = self.rect.move(-cx, -cy)
@@ -164,7 +265,6 @@ def portal_rect(hx, hy, normal, plat_rect):
         y = plat_rect.top - pt // 2
         x = max(plat_rect.left + 4, min(int(hx) - pl // 2, plat_rect.right - pl - 4))
         return pygame.Rect(x, y, pl, pt)
-    # bottom
     y = plat_rect.bottom - pt // 2
     x = max(plat_rect.left + 4, min(int(hx) - pl // 2, plat_rect.right - pl - 4))
     return pygame.Rect(x, y, pl, pt)
@@ -216,7 +316,7 @@ def make_level1():
         Platform(1350, 0, 50, 720, False),
         # Starting area floor (non-portalable)
         Platform(50, 590, 350, 80, False),
-        # Big WHITE wall in middle — shoot portals here
+        # Big wall in middle
         Platform(400, 300, 40, 550, False),
         # White floor section (portalable) to place second portal
         Platform(640, 200, 10, 100, True),
@@ -228,13 +328,30 @@ def make_level1():
         Platform(640, 200, 150, 10, False),
         # Upper platforms
         Platform(650, 50, 180, 10, True),
+        # Platform(440, 510, 10, 160, True),
+    ]
+    boxes = [
+        Box(100, 100),
+        Box(600, 450),
+    ]
+    buttons = [
+        PressureButton("Link1", 820, 440, 44, 10),
+        PressureButton("Link2", 820, 660, 44, 10),
+    ]
+    trapdoors = [
+        Trapdoor("Link1", 440, 450, 200, 10),
+        Trapdoor("Link1", 640, 50, 10, 200),
+        Trapdoor("Link2", 940, 460, 10, 210),
     ]
     return {
         'platforms': plats,
+        'boxes': boxes,
+        'buttons': buttons,
+        'trapdoors': trapdoors,
         'spawn': (80, 520),
         'exit_rect': pygame.Rect(1250, 600, 50, 60),
-        'name': 'Level 1: The boxes',
-        'hint': 'GLHF',
+        'name': 'Level 1: The Boxes',
+        'hint': 'E = pick up / drop box   |   Place box on red button to open the gate',
     }
 
 
@@ -249,12 +366,12 @@ def make_level2():
         Platform(50, 610, 280, 60, False),
         Platform(420, 610, 200, 60, False),
         Platform(750, 610, 600, 60, False),
-        # Blocking black wall  — forces portal use
+        # Blocking black wall — forces portal use
         Platform(330, 200, 90, 410, False),
         # White walls to use
-        Platform(50, 50, 30, 560, True),       # far-left white wall
-        Platform(700, 50, 30, 560, True),      # mid white wall
-        Platform(700, 570, 600, 25, True),     # white floor on right side
+        Platform(50, 50, 30, 560, True),
+        Platform(700, 50, 30, 560, True),
+        Platform(700, 570, 600, 25, True),
         # Middle platforms (black)
         Platform(50, 440, 280, 22, False),
         Platform(420, 330, 200, 22, False),
@@ -269,6 +386,9 @@ def make_level2():
     ]
     return {
         'platforms': plats,
+        'boxes': [],
+        'buttons': [],
+        'trapdoors': [],
         'spawn': (80, 540),
         'exit_rect': pygame.Rect(1260, 80, 50, 60),
         'name': 'Level 2: Ascent',
@@ -288,7 +408,7 @@ class Game:
         self.cam_x = 0.0
         self.cam_y = 0.0
         self.buttons = [
-            {'rect': pygame.Rect(WIDTH // 2 - 160, 300, 320, 65), 'label': 'Level 1: The Gap', 'n': 1},
+            {'rect': pygame.Rect(WIDTH // 2 - 160, 300, 320, 65), 'label': 'Level 1: The Boxes', 'n': 1},
             {'rect': pygame.Rect(WIDTH // 2 - 160, 400, 320, 65), 'label': 'Level 2: Ascent', 'n': 2},
         ]
 
@@ -319,7 +439,36 @@ class Game:
     def update(self):
         if self.state != 'playing':
             return
-        self.player.update(self.level_data['platforms'])
+
+        boxes = self.level_data.get('boxes', [])
+        btns = self.level_data.get('buttons', [])
+        trapdoors = self.level_data.get('trapdoors', [])
+
+        # Static solids: platforms + any closed trapdoors
+        static = self.level_data['platforms'] + [td for td in trapdoors if not td.open]
+
+        # Update boxes against static geometry only
+        for box in boxes:
+            box.update(static)
+
+        # Player collides with static geometry + any non-carried box (can stand on it)
+        solid = static + [box for box in boxes if not box.carried]
+        self.player.update(solid)
+
+        # Update pressure buttons
+        for btn in btns:
+            btn.update(self.player.rect, boxes)
+
+        # All trapdoors open while any button is active
+        # any_active = any(btn.active for btn in btns)
+        # for td in trapdoors:
+        #    td.open = any_active
+
+        for btn in btns:
+            for trp in trapdoors:
+                if btn.linkname == trp.linkname:
+                    trp.open = btn.active
+
         check_teleport(self.player, self.pa, self.pb)
 
         tx = self.player.rect.centerx - WIDTH // 2
@@ -371,10 +520,9 @@ class Game:
             screen.blit(k, (WIDTH // 2 - 120, 520 + i * 34))
             screen.blit(d, (WIDTH // 2 - 50, 520 + i * 34))
 
-        ctrl = font_small.render("WASD / Arrow keys = Move    Space = Jump    R = Reset    ESC = Menu", True, (120, 120, 120))
+        ctrl = font_small.render("WASD / Arrow keys = Move    Space = Jump    E = Pick up box    R = Reset    ESC = Menu", True, (120, 120, 120))
         screen.blit(ctrl, (WIDTH // 2 - ctrl.get_width() // 2, HEIGHT - 50))
 
-        # Legend: white vs black tiles
         pygame.draw.rect(screen, (210, 210, 210), pygame.Rect(WIDTH // 2 - 250, 590, 30, 30))
         wt = font_small.render("= portalable surface", True, (190, 190, 190))
         screen.blit(wt, (WIDTH // 2 - 210, 595))
@@ -384,8 +532,18 @@ class Game:
 
     def _draw_game(self):
         cx, cy = int(self.cam_x), int(self.cam_y)
+
+        for td in self.level_data.get('trapdoors', []):
+            td.draw(screen, cx, cy)
+
         for plat in self.level_data['platforms']:
             plat.draw(screen, cx, cy)
+
+        for btn in self.level_data.get('buttons', []):
+            btn.draw(screen, cx, cy)
+
+        for box in self.level_data.get('boxes', []):
+            box.draw(screen, cx, cy)
 
         er = self.level_data['exit_rect'].move(-cx, -cy)
         pygame.draw.rect(screen, EXIT_COLOR, er, border_radius=4)
@@ -395,6 +553,16 @@ class Game:
         self.pa.draw(screen, cx, cy)
         self.pb.draw(screen, cx, cy)
         self.player.draw(screen, cx, cy)
+
+        # Pickup hint when close to an uncarried box
+        if not self.player.held_box:
+            zone = self.player.rect.inflate(24, 24)
+            for box in self.level_data.get('boxes', []):
+                if not box.carried and zone.colliderect(box.rect):
+                    br = box.rect.move(-cx, -cy)
+                    hint = font_small.render("[E]", True, (220, 220, 80))
+                    screen.blit(hint, (br.centerx - hint.get_width() // 2, br.top - 24))
+                    break
 
         # Aiming line
         mx, my = pygame.mouse.get_pos()
@@ -426,6 +594,28 @@ class Game:
                 self.state = 'menu'
             elif event.key == pygame.K_r and self.state in ('playing', 'win'):
                 self.load_level(self._current_level)
+            elif event.key == pygame.K_e and self.state == 'playing':
+                boxes = self.level_data.get('boxes', [])
+                if self.player.held_box:
+                    # Drop the box to the side of the player
+                    box = self.player.held_box
+                    box.carried = False
+                    box.vy = 0.0
+                    box.vx = 0.0
+                    if self.player.vx >= 0:
+                        box.rect.left = self.player.rect.right + 2
+                    else:
+                        box.rect.right = self.player.rect.left - 2
+                    box.rect.centery = self.player.rect.centery
+                    self.player.held_box = None
+                else:
+                    # Pick up nearby box
+                    zone = self.player.rect.inflate(24, 24)
+                    for box in boxes:
+                        if not box.carried and zone.colliderect(box.rect):
+                            box.carried = True
+                            self.player.held_box = box
+                            break
         if event.type == pygame.MOUSEBUTTONDOWN:
             if self.state == 'playing':
                 if event.button == 1:
